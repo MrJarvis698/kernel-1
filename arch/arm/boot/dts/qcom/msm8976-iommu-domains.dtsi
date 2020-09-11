@@ -55,11 +55,10 @@
 			qcom,secure-domain;
 		};
 
-		lpass_audio_iommu: qcom,iommu-domain5 {
-			label = "adsp_io";
+		qcom,iommu-domain5 {
+			label = "lpass_audio";
 			qcom,iommu-contexts = <&adsp_io>;
 			qcom,virtual-addr-pool = <0x10000000 0x0FFFFFFF>;
-			#iommu-cells = <1>;
 		};
 	};
 };

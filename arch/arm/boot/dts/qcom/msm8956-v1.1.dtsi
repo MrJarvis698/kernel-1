@@ -19,7 +19,7 @@
  * msm8956.dtsi file.
  */
 
-#include "msm8956.dtsi"
+#include "hydrogen/msm8956-hydrogen.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. MSM 8956v1.1";
@@ -199,6 +199,20 @@
 
 &mdss_dsi {
 	/delete-property/ qcom,split-dsi-independent-pll;
+};
+
+&mdss_dsi0_pll {
+	qcom,ssc-enable;
+	qcom,ssc-frequency-hz = <30000>;
+	qcom,ssc-ppm = <5000>;
+	qcom,ssc-spread-mode = "down";
+};
+
+&mdss_dsi1_pll {
+	qcom,ssc-enable;
+	qcom,ssc-frequency-hz = <30000>;
+	qcom,ssc-ppm = <5000>;
+	qcom,ssc-spread-mode = "down";
 };
 
 &sdhc_1 {

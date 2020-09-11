@@ -137,6 +137,52 @@ dtb-$(CONFIG_ARCH_MSM8996) += msm8996-v2-pmi8994-cdp.dtb \
 	apq8096-v3-pmi8996-dragonboard.dtb
 endif
 
+ifeq ($(CONFIG_MACH_XIAOMI_HYDROGEN),y)
+dtb-$(CONFIG_ARCH_MSM8916) += hydrogen-msm8956-mtp.dtb \
+	hydrogen-msm8956-v1.1-mtp.dtb \
+	hydrogen-msm8976-mtp.dtb \
+	hydrogen-msm8976-v1.1-mtp.dtb
+else ifeq ($(CONFIG_MACH_XIAOMI_KENZO),y)
+dtb-$(CONFIG_ARCH_MSM8916) += kenzo-msm8956-mtp.dtb
+else
+dtb-$(CONFIG_ARCH_MSM8916) += msm8976-sim.dtb \
+	msm8976-rumi.dtb \
+	msm8976-qrd-skun.dtb \
+	msm8976-qrd-skun-evt2.dtb \
+	msm8976-v1.1-qrd-skun-dvt.dtb \
+	msm8976-cdp.dtb \
+	msm8976-mtp.dtb \
+	msm8976-rcm.dtb \
+	msm8976-internal-codec-cdp.dtb \
+	msm8976-polaris.dtb \
+	apq8076-cdp.dtb \
+	apq8076-mtp.dtb \
+	msm8956-sim.dtb \
+	msm8956-rumi.dtb \
+	msm8956-cdp.dtb \
+	msm8956-mtp.dtb \
+	msm8956-internal-codec-cdp.dtb \
+	apq8056-cdp.dtb \
+	apq8056-mtp.dtb \
+	msm8956-v1.1-mtp.dtb \
+	msm8956-v1.1-cdp.dtb \
+	msm8956-v1.1-qrd-skun.dtb \
+	apq8056-v1.1-mtp.dtb \
+	apq8056-v1.1-cdp.dtb \
+	msm8976-v1.1-mtp.dtb \
+	msm8976-v1.1-mtp-rome.dtb \
+	msm8976-v1.1-cdp.dtb \
+	msm8976-v1.1-rcm.dtb \
+	apq8076-v1.1-mtp.dtb \
+	apq8076-v1.1-cdp.dtb \
+	apq8076-v1.1-mtp-rome.dtb
+endif
+
+#dtb-$(CONFIG_ARCH_MSM8916) += msm8952-cdp.dtb \
+#       msm8952-ext-codec-cdp.dtb \
+#       msm8952-qrd-skum.dtb \
+#       msm8952-mtp.dtb
+
 dtb-$(CONFIG_ARCH_MSMCOBALT) += msmcobalt-sim.dtb \
 	msmcobalt-rumi.dtb \
 	msmcobalt-cdp.dtb \
