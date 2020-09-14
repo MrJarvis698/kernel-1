@@ -143,38 +143,10 @@ static void set_dload_mode(int on)
 	ret = scm_set_dload_mode(on ? SCM_DLOAD_MODE : 0, 0);
 	if (ret)
 		pr_err("Failed to set secure DLOAD mode: %d\n", ret);
+	else
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
 
 	dload_mode_enabled = on;
-}
-
-static bool get_dload_mode(void)
-{
-	return dload_mode_enabled;
-}
-
-static void enable_emergency_dload_mode(void)
-{
-	int ret;
-
-	if (emergency_dload_mode_addr) {
-		__raw_writel(EMERGENCY_DLOAD_MAGIC1,
-				emergency_dload_mode_addr);
-		__raw_writel(EMERGENCY_DLOAD_MAGIC2,
-				emergency_dload_mode_addr +
-				sizeof(unsigned int));
-		__raw_writel(EMERGENCY_DLOAD_MAGIC3,
-				emergency_dload_mode_addr +
-				(2 * sizeof(unsigned int)));
-
-		/* Need disable the pmic wdt, then the emergency dload mode
-		 * will not auto reset. */
-		qpnp_pon_wd_config(0);
-		mb();
-	}
-
-	ret = scm_set_dload_mode(SCM_EDLOAD_MODE, 0);
-	if (ret)
-		pr_err("Failed to set secure EDLOAD mode: %d\n", ret);
 }
 
 static int dload_set(const char *val, struct kernel_param *kp)
@@ -197,16 +169,12 @@ static int dload_set(const char *val, struct kernel_param *kp)
 
 	return 0;
 }
+int get_dload_mode(void)
+{
+	return download_mode;
+}
 #else
-static void set_dload_mode(int on)
-{
-	return;
-}
-
-static void enable_emergency_dload_mode(void)
-{
-	pr_err("dload mode is not enabled on target\n");
-}
+#define set_dload_mode(x) do {} while (0)
 
 static bool get_dload_mode(void)
 {
@@ -283,21 +251,22 @@ static void msm_restart_prepare(const char *cmd)
 		/* Set warm reset as true when device is in dload mode */
 		if (get_dload_mode() ||
 			((cmd != NULL && cmd[0] != '\0') &&
-			!strcmp(cmd, "edl")))
+			strcmp(cmd, "recovery") &&
+			strcmp(cmd, "bootloader") &&
+			strcmp(cmd, "rtc") &&
+			strcmp(cmd, "dm-verity device corrupted") &&
+			strcmp(cmd, "dm-verity enforcing") &&
+			strcmp(cmd, "keys clear")))
 			need_warm_reset = true;
 	} else {
 		need_warm_reset = (get_dload_mode() ||
 				(cmd != NULL && cmd[0] != '\0'));
 	}
 
-	/* Force warm reset and allow device to
-	 * preserve memory on restart 
-	 * only for bootloader and recovery commands */
-	if (cmd != NULL) {
-		if ((!strncmp(cmd, "bootloader", 10)) ||
-				(!strncmp(cmd, "recovery", 8)))
-			need_warm_reset = true;
-	}
+#ifdef CONFIG_MSM_PRESERVE_MEM
+	need_warm_reset = true;
+#endif
+
 
 	/* Hard reset the PMIC unless memory contents must be maintained. */
 	if (need_warm_reset) {
@@ -320,17 +289,12 @@ static void msm_restart_prepare(const char *cmd)
 				PON_RESTART_REASON_RTC);
 			__raw_writel(0x77665503, restart_reason);
 		} else if (!strcmp(cmd, "dm-verity device corrupted")) {
-			qpnp_pon_set_restart_reason(
-				PON_RESTART_REASON_DMVERITY_CORRUPTED);
 			__raw_writel(0x77665508, restart_reason);
 		} else if (!strcmp(cmd, "dm-verity enforcing")) {
-			qpnp_pon_set_restart_reason(
-				PON_RESTART_REASON_DMVERITY_ENFORCE);
 			__raw_writel(0x77665509, restart_reason);
 		} else if (!strcmp(cmd, "keys clear")) {
-			qpnp_pon_set_restart_reason(
-				PON_RESTART_REASON_KEYS_CLEAR);
 			__raw_writel(0x7766550a, restart_reason);
+	
 		} else if (!strncmp(cmd, "oem-", 4)) {
 			unsigned long code;
 			int ret;
@@ -338,19 +302,16 @@ static void msm_restart_prepare(const char *cmd)
 			if (!ret)
 				__raw_writel(0x6f656d00 | (code & 0xff),
 					     restart_reason);
-		} else if (!strncmp(cmd, "edl", 3)) {
-			enable_emergency_dload_mode();
 		} else {
-			pr_notice("%s : cmd is %s, set to reboot mode\n", __func__, cmd);
-			qpnp_pon_set_restart_reason(PON_RESTART_REASON_REBOOT);
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_REBOOT);
 			__raw_writel(0x77665501, restart_reason);
 		}
 	} else {
-		pr_notice("%s : cmd is NULL, set to reboot mode\n", __func__);
-		qpnp_pon_set_restart_reason(PON_RESTART_REASON_REBOOT);
-		__raw_writel(0x776655AA, restart_reason);
+		qpnp_pon_set_restart_reason(
+			PON_RESTART_REASON_REBOOT);
+		__raw_writel(0x77665501, restart_reason);
 	}
-
 	flush_cache_all();
 
 	/*outer_flush_all is not supported by 64bit kernel*/
@@ -396,8 +357,19 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 	 * device will take the usual restart path.
 	 */
 
-	if (WDOG_BITE_ON_PANIC && in_panic)
+	if (WDOG_BITE_ON_PANIC && in_panic) {
+		if (!get_dload_mode()) {
+			if (!is_scm_armv8())
+				ret = scm_call_atomic2(SCM_SVC_BOOT,
+					SCM_WDOG_DEBUG_BOOT_PART, 1, 0);
+			else
+				ret = scm_call2_atomic(SCM_SIP_FNID(
+					SCM_SVC_BOOT,
+					SCM_WDOG_DEBUG_BOOT_PART), &desc);
+		}
+
 		msm_trigger_wdog_bite();
+	}
 #endif
 
 	scm_disable_sdi();
@@ -414,7 +386,8 @@ static void do_msm_poweroff(void)
 	set_dload_mode(0);
 	scm_disable_sdi();
 	qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN);
-
+	qpnp_pon_set_restart_reason(
+		PON_RESTART_REASON_UNKNOWN);
 	halt_spmi_pmic_arbiter();
 	deassert_ps_hold();
 
@@ -571,10 +544,13 @@ skip_sysfs_create:
 			pr_err("unable to map imem restart reason offset\n");
 			ret = -ENOMEM;
 			goto err_restart_reason;
-		}
+		} else
+			__raw_writel(0x77665510, restart_reason);
+
 	}
 
-	mem = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pshold-base");
+	qpnp_pon_set_restart_reason(
+		PON_RESTART_REASON_UNKNOWN);	mem = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pshold-base");
 	msm_ps_hold = devm_ioremap_resource(dev, mem);
 	if (IS_ERR(msm_ps_hold))
 		return PTR_ERR(msm_ps_hold);

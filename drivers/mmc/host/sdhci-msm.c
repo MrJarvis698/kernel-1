@@ -44,6 +44,11 @@
 #include "sdhci-msm-ice.h"
 #include "cmdq_hci.h"
 
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+extern int sd_slot_plugoutt;
+struct sdhci_msm_reg_data *sd_vdd_vreg = NULL;
+#endif
+
 #define QOS_REMOVE_DELAY_MS	10
 #define CORE_POWER		0x0
 #define CORE_SW_RST		(1 << 7)
@@ -1304,6 +1309,13 @@ static int sdhci_msm_dt_parse_vreg_info(struct device *dev,
 	if (of_get_property(np, prop_name, NULL))
 		vreg->is_always_on = true;
 
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+	snprintf(prop_name, MAX_PROP_SIZE,
+			"qcom,%s-is-sd-vdd", vreg_name);
+	if (of_get_property(np, prop_name, NULL))
+		vreg->is_sd_vdd = true;
+#endif
+
 	snprintf(prop_name, MAX_PROP_SIZE,
 			"qcom,%s-lpm-sup", vreg_name);
 	if (of_get_property(np, prop_name, NULL))
@@ -1332,6 +1344,11 @@ static int sdhci_msm_dt_parse_vreg_info(struct device *dev,
 	}
 
 	*vreg_data = vreg;
+
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+	if (vreg->is_sd_vdd == true)
+		sd_vdd_vreg = vreg;
+#endif
 	dev_dbg(dev, "%s: %s %s vol=[%d %d]uV, curr=[%d %d]uA\n",
 		vreg->name, vreg->is_always_on ? "always_on," : "",
 		vreg->lpm_sup ? "lpm_sup," : "", vreg->low_vol_level,
@@ -1646,12 +1663,6 @@ struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev,
 	if (gpio_is_valid(pdata->status_gpio) & !(flags & OF_GPIO_ACTIVE_LOW))
 		pdata->caps2 |= MMC_CAP2_CD_ACTIVE_HIGH;
 
-	pdata->uim2_gpio = of_get_named_gpio(np, "uim2-gpios", 0);
-	if (!gpio_is_valid(pdata->uim2_gpio)) {
-		pr_err("## %s: gpio_is_valid(pdata->uim2_gpio)=%d: failure\n",
-			mmc_hostname(msm_host->mmc), pdata->uim2_gpio);
-	}
-
 	of_property_read_u32(np, "qcom,bus-width", &bus_width);
 	if (bus_width == 8)
 		pdata->mmc_bus_width = MMC_CAP_8_BIT_DATA;
@@ -1785,11 +1796,6 @@ struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev,
 
 	if (of_get_property(np, "qcom,core_3_0v_support", NULL))
 		pdata->core_3_0v_support = true;
-
-#ifdef CONFIG_WIFI_CONTROL_FUNC
-	if (of_get_property(np, "somc,use-for-wifi", NULL))
-		pdata->use_for_wifi = true;
-#endif
 
 	return pdata;
 out:
@@ -2105,6 +2111,11 @@ static int sdhci_msm_vreg_enable(struct sdhci_msm_reg_data *vreg)
 {
 	int ret = 0;
 
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+	if ((vreg != NULL) && (vreg->is_sd_vdd == 1) && (sd_slot_plugoutt == 1))
+		return ret;
+#endif
+
 	/* Put regulator in HPM (high power mode) */
 	ret = sdhci_msm_vreg_set_optimum_mode(vreg, vreg->hpm_uA);
 	if (ret < 0)
@@ -2161,6 +2172,18 @@ static int sdhci_msm_vreg_disable(struct sdhci_msm_reg_data *vreg)
 out:
 	return ret;
 }
+
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+int sdhci_msm_disable_sd_vdd(void)
+{
+	int ret = 0;
+	if ((sd_vdd_vreg != NULL) && (sd_vdd_vreg->is_sd_vdd == 1)) {
+		pr_err("sdhci_msm_disable_sd_vdd \n");
+		ret = sdhci_msm_vreg_disable(sd_vdd_vreg);
+	}
+	return ret;
+}
+#endif
 
 static int sdhci_msm_setup_vreg(struct sdhci_msm_pltfm_data *pdata,
 			bool enable, bool is_init)
@@ -3852,9 +3875,6 @@ static void sdhci_set_default_hw_caps(struct sdhci_msm_host *msm_host,
 		msm_host->enhanced_strobe = true;
 	}
 
-#ifdef CONFIG_ARCH_SONY_LOIRE
-	msm_host->enhanced_strobe = false;
-#endif
 
 	/*
 	 * SDCC 5 controller with major version 1 and minor version 0x42,
@@ -3935,8 +3955,6 @@ static bool sdhci_msm_is_bootdevice(struct device *dev)
 	 */
 	return true;
 }
-
-extern void somc_wifi_mmc_host_register(struct mmc_host *host);
 
 static int sdhci_msm_probe(struct platform_device *pdev)
 {
@@ -4335,13 +4353,6 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (gpio_is_valid(msm_host->pdata->uim2_gpio)) {
-		mmc_gpio_init_uim2(msm_host->mmc, msm_host->pdata->uim2_gpio);
-	} else {
-		pr_err("## %s: can't set uim2_gpio: %d\n", mmc_hostname(host->mmc),
-			msm_host->pdata->uim2_gpio);
-	}
-
 	if ((sdhci_readl(host, SDHCI_CAPABILITIES) & SDHCI_CAN_64BIT) &&
 		(dma_supported(mmc_dev(host->mmc), DMA_BIT_MASK(64)))) {
 		host->dma_mask = DMA_BIT_MASK(64);
@@ -4390,14 +4401,6 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, MSM_AUTOSUSPEND_DELAY_MS);
 	pm_runtime_use_autosuspend(&pdev->dev);
-
-#ifdef CONFIG_WIFI_CONTROL_FUNC
-	if (msm_host->pdata->use_for_wifi) {
-		msm_host->mmc->caps &= ~MMC_CAP_NEEDS_POLL;
-		msm_host->mmc->caps2 |= MMC_CAP2_NONSTANDARD_OCR;
-		somc_wifi_mmc_host_register(msm_host->mmc);
-	}
-#endif
 
 	msm_host->msm_bus_vote.max_bus_bw.show = show_sdhci_max_bus_bw;
 	msm_host->msm_bus_vote.max_bus_bw.store = store_sdhci_max_bus_bw;
@@ -4669,6 +4672,11 @@ static int sdhci_msm_resume(struct device *dev)
 	if (gpio_is_valid(msm_host->pdata->status_gpio) &&
 		(msm_host->mmc->slot.cd_irq >= 0))
 			enable_irq(msm_host->mmc->slot.cd_irq);
+
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+		if ((sd_slot_plugoutt == 1) && (mmc_hostname(host->mmc) != NULL) && (!strcmp(mmc_hostname(host->mmc), "mmc1")))
+			sd_slot_plugoutt = gpio_get_value_cansleep(msm_host->pdata->status_gpio);
+#endif
 
 	if (pm_runtime_suspended(dev)) {
 		pr_debug("%s: %s: runtime suspended, defer system resume\n",

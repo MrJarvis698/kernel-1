@@ -70,8 +70,7 @@ MODULE_ALIAS("mmc:block");
 #define MMC_EXTRACT_INDEX_FROM_ARG(x) ((x & 0x00FF0000) >> 16)
 #define MMC_CMDQ_STOP_TIMEOUT_MS 100
 
-#define mmc_req_rel_wr(req)	(((req->cmd_flags & REQ_FUA) || \
-				  (req->cmd_flags & REQ_META)) && \
+#define mmc_req_rel_wr(req)	((req->cmd_flags & REQ_FUA) && \
 				  (rq_data_dir(req) == WRITE))
 #define PACKED_CMD_VER	0x01
 #define PACKED_CMD_WR	0x02
@@ -621,6 +620,15 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
 	idata = mmc_blk_ioctl_copy_from_user(ic_ptr);
 	if (IS_ERR_OR_NULL(idata))
 		return PTR_ERR(idata);
+	if (idata->ic.postsleep_max_us < idata->ic.postsleep_min_us) {
+		pr_err("%s: min value: %u must not be greater than max value: %u\n",
+			__func__, idata->ic.postsleep_min_us,
+			idata->ic.postsleep_max_us);
+		WARN_ON(1);
+		err = -EPERM;
+		goto cmd_err;
+	}
+
 	md = mmc_blk_get(bdev->bd_disk);
 	if (!md) {
 		err = -EINVAL;
@@ -636,6 +644,14 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
 	cmd.opcode = idata->ic.opcode;
 	cmd.arg = idata->ic.arg;
 	cmd.flags = idata->ic.flags;
+
+	if (idata->ic.postsleep_max_us < idata->ic.postsleep_min_us) {
+		pr_err("%s: min value: %u must not be greater than max value: %u\n",
+			__func__, idata->ic.postsleep_min_us,
+			idata->ic.postsleep_max_us);
+		WARN_ON(1);
+		return -EPERM;
+	}
 
 	if (idata->buf_bytes) {
 		data.sg = &sg;
@@ -2023,8 +2039,7 @@ static void mmc_blk_rw_rq_prep(struct mmc_queue_req *mqrq,
 	 * XXX: this really needs a good explanation of why REQ_META
 	 * is treated special.
 	 */
-	bool do_rel_wr = ((req->cmd_flags & REQ_FUA) ||
-			  (req->cmd_flags & REQ_META)) &&
+	bool do_rel_wr = (req->cmd_flags & REQ_FUA) &&
 		(rq_data_dir(req) == WRITE) &&
 		(md->flags & MMC_BLK_REL_WR);
 
@@ -2536,8 +2551,8 @@ static void mmc_blk_packed_hdr_wrq_prep(struct mmc_queue_req *mqrq,
 
 	packed_cmd_hdr = packed->cmd_hdr;
 	memset(packed_cmd_hdr, 0, sizeof(packed->cmd_hdr));
-	packed_cmd_hdr[0] = (packed->nr_entries << 16) |
-		(PACKED_CMD_WR << 8) | PACKED_CMD_VER;
+	packed_cmd_hdr[0] =cpu_to_le32((packed->nr_entries << 16) |
+		(PACKED_CMD_WR << 8) | PACKED_CMD_VER);
 	hdr_blocks = mmc_large_sector(card) ? 8 : 1;
 
 	/*
@@ -2551,14 +2566,14 @@ static void mmc_blk_packed_hdr_wrq_prep(struct mmc_queue_req *mqrq,
 			((brq->data.blocks * brq->data.blksz) >=
 			 card->ext_csd.data_tag_unit_size);
 		/* Argument of CMD23 */
-		packed_cmd_hdr[(i * 2)] =
+		packed_cmd_hdr[(i * 2)] = cpu_to_le32(
 			(do_rel_wr ? MMC_CMD23_ARG_REL_WR : 0) |
 			(do_data_tag ? MMC_CMD23_ARG_TAG_REQ : 0) |
-			blk_rq_sectors(prq);
+			blk_rq_sectors(prq));
 		/* Argument of CMD18 or CMD25 */
-		packed_cmd_hdr[((i * 2)) + 1] =
+		packed_cmd_hdr[((i * 2)) + 1] = cpu_to_le32(
 			mmc_card_blockaddr(card) ?
-			blk_rq_pos(prq) : blk_rq_pos(prq) << 9;
+			blk_rq_pos(prq) : blk_rq_pos(prq) << 9);
 		packed->blocks += blk_rq_sectors(prq);
 		i++;
 	}
@@ -3241,7 +3256,7 @@ void mmc_blk_cmdq_complete_rq(struct request *rq)
 		BUG_ON(!test_and_clear_bit(cmdq_req->tag,
 					 &ctx_info->data_active_reqs));
 	if (!is_dcmd)
-		mmc_cmdq_post_req(host, cmdq_req->tag, err);
+	mmc_cmdq_post_req(host, cmdq_req->tag, err);
 	if (cmdq_req->cmdq_req_flags & DCMD) {
 		clear_bit(CMDQ_STATE_DCMD_ACTIVE, &ctx_info->curr_state);
 		blk_end_request_all(rq, err);
@@ -3387,7 +3402,6 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 				break;
 			goto cmd_abort;
 		}
-		case MMC_BLK_RETRY_SINGLE:
 		case MMC_BLK_ECC_ERR:
 			if (brq->data.blocks > 1) {
 				/* Redo read one sector at a time */
@@ -3774,7 +3788,8 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	set_capacity(md->disk, size);
 
 	if (mmc_host_cmd23(card->host)) {
-		if (mmc_card_mmc(card) ||
+		if ((mmc_card_mmc(card) &&
+		     card->csd.mmca_vsn >= CSD_SPEC_VER_3) ||
 		    (mmc_card_sd(card) &&
 		     card->scr.cmds & SD_SCR_CMD23_SUPPORT))
 			md->flags |= MMC_BLK_CMD23;
@@ -4047,11 +4062,13 @@ static const struct mmc_fixup blk_fixups[] =
 		  add_quirk_mmc, MMC_QUIRK_CMDQ_EMPTY_BEFORE_DCMD),
 
 	/*
-	 * Some Micron MMC cards needs longer data read timeout than
-	 * indicated in CSD.
+	 * Some MMC cards need longer data read timeout than indicated in CSD.
 	 */
 	MMC_FIXUP(CID_NAME_ANY, CID_MANFID_MICRON, 0x200, add_quirk_mmc,
 		  MMC_QUIRK_LONG_READ_TIME),
+	MMC_FIXUP("008GE0", CID_MANFID_TOSHIBA, CID_OEMID_ANY, add_quirk_mmc,
+		  MMC_QUIRK_LONG_READ_TIME),
+
 
 	/*
 	 * Some Samsung MMC cards need longer data read timeout than
@@ -4148,6 +4165,8 @@ static int mmc_blk_probe(struct mmc_card *card)
 
 #ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
 	mmc_set_bus_resume_policy(card->host, 1);
+	pr_debug("%s: enabling deferred resume !!!\n",
+			mmc_hostname(card->host));
 #endif
 	if (mmc_add_disk(md))
 		goto out;

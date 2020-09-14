@@ -3698,8 +3698,6 @@ static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 		return 0;
 	if (!mmc_attach_sd(host))
 		return 0;
-	else
-		mmc_gpio_tray_close_set_uim2(host, 1);
 	if (!mmc_attach_mmc(host))
 		return 0;
 
@@ -3874,8 +3872,6 @@ void mmc_stop_host(struct mmc_host *host)
 	host->rescan_disable = 1;
 	cancel_delayed_work_sync(&host->detect);
 	mmc_flush_scheduled_work();
-
-	mmc_gpio_set_uim2_en(host, 0);
 
 	/* clear pm flags now and let card drivers set them as needed */
 	host->pm_flags = 0;
@@ -4093,15 +4089,7 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 		spin_lock_irqsave(&host->lock, flags);
 		host->rescan_disable = 1;
 		spin_unlock_irqrestore(&host->lock, flags);
-#ifdef CONFIG_MMC_SD_DEFERRED_RESUME
-		if (cancel_delayed_work_sync(&host->detect)) {
-			pending_detect = true;
-		}
-
-		mmc_cd_prepare_suspend(host, pending_detect);
-#else
 		cancel_delayed_work_sync(&host->detect);
-#endif
 
 		if (!host->bus_ops)
 			break;
@@ -4132,10 +4120,6 @@ int mmc_pm_notify(struct notifier_block *notify_block,
 			break;
 		}
 		spin_unlock_irqrestore(&host->lock, flags);
-#ifdef CONFIG_MMC_SD_DEFERRED_RESUME
-		if (!mmc_cd_is_pending_detect(host))
-			break; /* IRQ should be triggered if CD changed */
-#endif
 		_mmc_detect_change(host, 0, false);
 
 	}

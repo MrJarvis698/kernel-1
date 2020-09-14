@@ -333,7 +333,7 @@ static int ngd_xfer_msg(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 	u8 la = txn->la;
 	u8 txn_mt;
 	u16 txn_mc = txn->mc;
-	u8 wbuf[SLIM_MSGQ_BUF_LEN];
+	u8 wbuf[SLIM_MSGQ_BUF_LEN] = {0};
 	bool report_sat = false;
 	bool sync_wr = true;
 
@@ -1366,7 +1366,6 @@ static int ngd_slim_enable(struct msm_slim_ctrl *dev, bool enable)
 	return ret;
 }
 
-#ifdef CONFIG_PM
 static int ngd_slim_power_down(struct msm_slim_ctrl *dev)
 {
 	unsigned long flags;
@@ -1385,7 +1384,6 @@ static int ngd_slim_power_down(struct msm_slim_ctrl *dev)
 	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 	return msm_slim_qmi_power_request(dev, false);
 }
-#endif
 
 static int ngd_slim_rx_msgq_thread(void *data)
 {
@@ -1399,7 +1397,7 @@ static int ngd_slim_rx_msgq_thread(void *data)
 		u8 wbuf[8];
 
 		set_current_state(TASK_INTERRUPTIBLE);
-		wait_for_completion(notify);
+		wait_for_completion_interruptible(notify);
 
 		txn.dt = SLIM_MSG_DEST_LOGICALADDR;
 		txn.ec = 0;
@@ -1461,7 +1459,7 @@ static int ngd_notify_slaves(void *data)
 
 	while (!kthread_should_stop()) {
 		set_current_state(TASK_INTERRUPTIBLE);
-		wait_for_completion(&dev->qmi.slave_notify);
+		wait_for_completion_interruptible(&dev->qmi.slave_notify);
 		/* Probe devices for first notification */
 		if (!i) {
 			i++;
@@ -1603,7 +1601,6 @@ static int ngd_slim_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dev);
 	slim_set_ctrldata(&dev->ctrl, dev);
 
-#ifdef CONFIG_IPC_LOGGING
 	/* Create IPC log context */
 	dev->ipc_slimbus_log = ipc_log_context_create(IPC_SLIMBUS_LOG_PAGES,
 						dev_name(dev->dev), 0);
@@ -1616,7 +1613,6 @@ static int ngd_slim_probe(struct platform_device *pdev)
 		SLIM_INFO(dev, "start logging for slim dev %s\n",
 				dev_name(dev->dev));
 	}
-#endif
 	ret = sysfs_create_file(&dev->dev->kobj, &dev_attr_debug_mask.attr);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to create dev. attr\n");
@@ -1882,7 +1878,7 @@ static int ngd_slim_runtime_resume(struct device *device)
 	return ret;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int ngd_slim_runtime_suspend(struct device *device)
 {
 	struct platform_device *pdev = to_platform_device(device);
@@ -1898,9 +1894,7 @@ static int ngd_slim_runtime_suspend(struct device *device)
 	SLIM_INFO(dev, "Slim runtime suspend: ret %d\n", ret);
 	return ret;
 }
-#endif
 
-#ifdef CONFIG_PM_SLEEP
 static int ngd_slim_suspend(struct device *dev)
 {
 	int ret = -EBUSY;

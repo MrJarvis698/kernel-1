@@ -19,6 +19,13 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+#define SD_VDD_IS_NOT_OPEN_IF_SLOT_NOT_INSERT 1
+
+int sd_slot_plugoutt = 0;
+extern int  sdhci_msm_disable_sd_vdd(void);
+#endif
+
 struct mmc_gpio {
 	struct gpio_desc *ro_gpio;
 	struct gpio_desc *cd_gpio;
@@ -28,10 +35,6 @@ struct mmc_gpio {
 	char cd_label[0];
 	bool status;
 	int uim2_gpio;
-#ifdef CONFIG_MMC_SD_DEFERRED_RESUME
-	bool pending_detect;
-	bool suspended;
-#endif
 };
 
 int mmc_gpio_get_status(struct mmc_host *host)
@@ -48,40 +51,12 @@ out:
 	return ret;
 }
 
-#ifdef CONFIG_MMC_SD_DEFERRED_RESUME
-void mmc_cd_prepare_suspend(struct mmc_host *host, bool pending_detect)
-{
-	struct mmc_gpio *ctx = host->slot.handler_priv;
-
-	if (!ctx)
-		return;
-
-	ctx->suspended = true;
-	ctx->pending_detect = pending_detect;
-}
-EXPORT_SYMBOL(mmc_cd_prepare_suspend);
-
-bool mmc_cd_is_pending_detect(struct mmc_host *host)
-{
-	struct mmc_gpio *ctx = host->slot.handler_priv;
-
-	if (!ctx)
-		return false;
-
-	return ctx->pending_detect;
-}
-EXPORT_SYMBOL(mmc_cd_is_pending_detect);
-#endif
-
 static irqreturn_t mmc_gpio_cd_irqt(int irq, void *dev_id)
 {
 	/* Schedule a card detection after a debounce timeout */
 	struct mmc_host *host = dev_id;
 	struct mmc_gpio *ctx = host->slot.handler_priv;
 	int status;
-#ifdef CONFIG_MMC_SD_DEFERRED_RESUME
-	unsigned long flags;
-#endif
 
 	if (!host->ops)
 		goto out;
@@ -90,8 +65,13 @@ static irqreturn_t mmc_gpio_cd_irqt(int irq, void *dev_id)
 	if (unlikely(status < 0))
 		goto out;
 
-	if (status == 0)
-		mmc_gpio_set_uim2_en(host, 0);
+
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+	#if SD_VDD_IS_NOT_OPEN_IF_SLOT_NOT_INSERT
+	sd_slot_plugoutt = gpio_get_value_cansleep(ctx->cd_gpio);
+	#endif
+	pr_err(" mmc_gpio_cd_irqt sd_slot_plugoutt = %d\n", sd_slot_plugoutt);
+#endif
 
 	if (status ^ ctx->status) {
 		pr_info("%s: slot status change detected (%d -> %d), GPIO_ACTIVE_%s\n",
@@ -101,22 +81,17 @@ static irqreturn_t mmc_gpio_cd_irqt(int irq, void *dev_id)
 		ctx->status = status;
 
 		host->trigger_card_event = true;
-#ifdef CONFIG_MMC_SD_DEFERRED_RESUME
-		if (ctx->suspended) {
-			/*
-			 * host->rescan_disable is normally set to 0 in
-			 * PM_POST_RESTORE of mmc_pm_notify but in case
-			 * of a deferred resume we might get IRQ before
-			 * it is called.
-			 */
-			spin_lock_irqsave(&host->lock, flags);
-			host->rescan_disable = 0;
-			spin_unlock_irqrestore(&host->lock, flags);
-		}
-		ctx->suspended = false;
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+		if (sd_slot_plugoutt == 1) {
+
+			if ((sd_slot_plugoutt == 1) && (mmc_hostname(host) != NULL) && (!strcmp(mmc_hostname(host), "mmc1")))
+				sdhci_msm_disable_sd_vdd();
+			mmc_detect_change(host, msecs_to_jiffies(0));
+		} else
+			mmc_detect_change(host, msecs_to_jiffies(1));
+#else
+		mmc_detect_change(host, msecs_to_jiffies(1));
 #endif
-		/* Schedule a card detection after a debounce timeout */
-		mmc_detect_change(host, msecs_to_jiffies(200));
 	}
 out:
 
@@ -306,10 +281,6 @@ int mmc_gpio_request_cd(struct mmc_host *host, unsigned int gpio,
 
 	ctx->override_cd_active_level = true;
 	ctx->cd_gpio = gpio_to_desc(gpio);
-#ifdef CONFIG_MMC_SD_DEFERRED_RESUME
-	ctx->pending_detect = false;
-	ctx->suspended = false;
-#endif
 	return 0;
 }
 EXPORT_SYMBOL(mmc_gpio_request_cd);
@@ -494,41 +465,3 @@ void mmc_gpiod_free_cd(struct mmc_host *host)
 	ctx->cd_gpio = NULL;
 }
 EXPORT_SYMBOL(mmc_gpiod_free_cd);
-
-void mmc_gpio_init_uim2(struct mmc_host *host, unsigned int gpio)
-{
-	struct mmc_gpio *ctx;
-
-	ctx = host->slot.handler_priv;
-
-	ctx->uim2_gpio = gpio;
-
-	pr_info("## %s: %s: gpio=%d\n", mmc_hostname(host), __func__, gpio);
-
-	mmc_gpio_set_uim2_en(host, 0);
-}
-EXPORT_SYMBOL(mmc_gpio_init_uim2);
-
-void mmc_gpio_set_uim2_en(struct mmc_host *host, int value)
-{
-	struct mmc_gpio *ctx = host->slot.handler_priv;
-
-	if (!ctx || !gpio_is_valid(ctx->uim2_gpio)) {
-		pr_err("## %s: gpio_set failure: ctx=%p, uim2_gpio=%d\n",
-			mmc_hostname(host), ctx, ctx ? ctx->uim2_gpio : 0);
-		return;
-	}
-	gpio_set_value(ctx->uim2_gpio, value);
-	pr_info("## %s: %s: gpio=%d value=%d\n", mmc_hostname(host), __func__,
-			ctx->uim2_gpio, value);
-}
-EXPORT_SYMBOL(mmc_gpio_set_uim2_en);
-
-void mmc_gpio_tray_close_set_uim2(struct mmc_host *host, int value)
-{
-	struct mmc_gpio *ctx = host->slot.handler_priv;
-
-	if (ctx && ctx->status)
-		mmc_gpio_set_uim2_en(host, value);
-}
-EXPORT_SYMBOL(mmc_gpio_tray_close_set_uim2);

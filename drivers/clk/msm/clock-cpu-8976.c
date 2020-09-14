@@ -239,7 +239,7 @@ static struct pll_clk cci_sr_pll = {
 
 DEFINE_FIXED_DIV_CLK(cci_sr_pll_main, 2, &cci_sr_pll.c);
 
-static const char const *mux_names[] = {"c0", "c1", "cci"};
+static const char *mux_names[] = {"c0", "c1", "cci"};
 
 #define SAFE_NUM	2
 
@@ -530,6 +530,89 @@ static struct clk_lookup cpu_clocks_8976[] = {
 static struct mux_div_clk *cpussmux[] = { &a53ssmux, &a72ssmux, &ccissmux };
 static struct cpu_clk_8976 *cpuclk[] = { &a53_clk, &a72_clk, &cci_clk};
 
+#ifdef CONFIG_MACH_XIAOMI_KENZO
+extern int cpr_regulator_get_corner_voltage(struct regulator *regulator,
+		int corner);
+extern int cpr_regulator_set_corner_voltage(struct regulator *regulator,
+		int corner, int volt);
+
+ssize_t cpu_clock_get_vdd(char *buf)
+{
+	ssize_t count = 0;
+	int i, uv;
+
+	if (!buf)
+		return 0;
+
+	for (i = 1; i < a53_clk.c.num_fmax; i++) {
+		uv = cpr_regulator_get_corner_voltage(
+					a53_clk.c.vdd_class->regulator[0],
+					a53_clk.c.vdd_class->vdd_uv[i]);
+		if (uv < 0)
+			return 0;
+		count += sprintf(buf + count, "A53_%lumhz: %d mV\n",
+					a53_clk.c.fmax[i] / 1000000,
+					uv / 1000);
+	}
+
+	for (i = 1; i < a72_clk.c.num_fmax; i++) {
+		uv = cpr_regulator_get_corner_voltage(
+					a72_clk.c.vdd_class->regulator[0],
+					a72_clk.c.vdd_class->vdd_uv[i]);
+		if (uv < 0)
+			return 0;
+		count += sprintf(buf + count, "A72_%lumhz: %d mV\n",
+					a72_clk.c.fmax[i] / 1000000,
+					uv / 1000);
+	}
+
+	return count;
+}
+
+ssize_t cpu_clock_set_vdd(const char *buf, size_t count)
+{
+	int i, mv, ret;
+	char line[32];
+
+	if (!buf)
+		return -EINVAL;
+
+	for (i = 1; i < a53_clk.c.num_fmax; i++) {
+		ret = sscanf(buf, "%d", &mv);
+		if (ret != 1)
+			return -EINVAL;
+
+		ret = cpr_regulator_set_corner_voltage(
+					a53_clk.c.vdd_class->regulator[0],
+					a53_clk.c.vdd_class->vdd_uv[i],
+					mv * 1000);
+        if (ret < 0)
+			return ret;
+
+        ret = sscanf(buf, "%s", line);
+		buf += strlen(line) + 1;
+	}
+
+	for (i = 1; i < a72_clk.c.num_fmax; i++) {
+		ret = sscanf(buf, "%d", &mv);
+		if (ret != 1)
+			return -EINVAL;
+
+		ret = cpr_regulator_set_corner_voltage(
+					a72_clk.c.vdd_class->regulator[0],
+					a72_clk.c.vdd_class->vdd_uv[i],
+					mv * 1000);
+        if (ret < 0)
+			return ret;
+
+        ret = sscanf(buf, "%s", line);
+		buf += strlen(line) + 1;
+	}
+
+	return count;
+}
+#endif
+
 static struct clk *logical_cpu_to_clk(int cpu)
 {
 	struct device_node *cpu_node = of_get_cpu_node(cpu, NULL);
@@ -671,7 +754,7 @@ static void print_opp_table(int a53_cpu, int a72_cpu)
 static void populate_opp_table(struct platform_device *pdev)
 {
 	struct platform_device *apc0_dev, *apc1_dev;
-	struct device_node *apc0_node = NULL, *apc1_node = NULL;
+	struct device_node *apc0_node, *apc1_node = NULL;
 	unsigned long apc0_fmax, apc1_fmax;
 	int cpu, a53_cpu = 0, a72_cpu = 0;
 
@@ -950,35 +1033,6 @@ static int cpu_parse_devicetree(struct platform_device *pdev)
 	return 0;
 }
 
-
-/**
- * clock_panic_callback() - panic notification callback function.
- *              This function is invoked when a kernel panic occurs.
- * @nfb:        Notifier block pointer
- * @event:      Value passed unmodified to notifier function
- * @data:       Pointer passed unmodified to notifier function
- *
- * Return: NOTIFY_OK
- */
-static int clock_panic_callback(struct notifier_block *nfb,
-					unsigned long event, void *data)
-{
-	unsigned long rate;
-
-	rate  = (a53_clk.c.count) ? a53_clk.c.rate : 0;
-	pr_err("%s frequency: %10lu Hz\n", a53_clk.c.dbg_name, rate);
-
-	rate  = (a72_clk.c.count) ? a72_clk.c.rate : 0;
-	pr_err("%s frequency: %10lu Hz\n", a72_clk.c.dbg_name, rate);
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block clock_panic_notifier = {
-	.notifier_call = clock_panic_callback,
-	.priority = 1,
-};
-
 #define GLB_DIAG	0x0b11101c
 
 static int clock_cpu_probe(struct platform_device *pdev)
@@ -1099,9 +1153,6 @@ static int clock_cpu_probe(struct platform_device *pdev)
 
 	a53_clk.hw_low_power_ctrl = true;
 	a72_clk.hw_low_power_ctrl = true;
-
-	atomic_notifier_chain_register(&panic_notifier_list,
-					&clock_panic_notifier);
 
 	return 0;
 }
